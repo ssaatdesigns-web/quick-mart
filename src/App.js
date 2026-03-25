@@ -1,742 +1,917 @@
-import { useState, useEffect, useContext, createContext, useCallback, useRef } from "react";
-import { db } from "./firebase";
-import {
-  collection, onSnapshot, addDoc, serverTimestamp,
-  query, orderBy, doc, getDoc
-} from "firebase/firestore";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { supabase } from "./supabase";
 
-// ─── CONTEXT ─────────────────────────────────────────────────────────────────
-const AppContext = createContext();
+const DEFAULT_SETTINGS = {
+  deliveryFee: 30,
+  platformFee: 5,
+  taxRate: 5,
+  deliveryTime: 8,
+};
 
-// ─── FALLBACK DATA (shown while Firebase loads) ───────────────────────────────
-const FALLBACK_CATEGORIES = [
-  { id: "fruits", name: "Fruits", emoji: "🍎", color: "#FF6B6B", bg: "#FFF0F0" },
-  { id: "vegetables", name: "Vegetables", emoji: "🥦", color: "#51CF66", bg: "#F0FFF4" },
-  { id: "dairy", name: "Dairy", emoji: "🥛", color: "#339AF0", bg: "#F0F7FF" },
-  { id: "snacks", name: "Snacks", emoji: "🍿", color: "#FF922B", bg: "#FFF5EB" },
-  { id: "beverages", name: "Beverages", emoji: "🧃", color: "#CC5DE8", bg: "#F9F0FF" },
-  { id: "bakery", name: "Bakery", emoji: "🍞", color: "#F59F00", bg: "#FFFBEB" },
-  { id: "meat", name: "Meat", emoji: "🍗", color: "#E64980", bg: "#FFF0F6" },
-  { id: "frozen", name: "Frozen", emoji: "🧊", color: "#1098AD", bg: "#E3FAFC" },
-];
-
-const FALLBACK_PRODUCTS = [
-  { id: "p1", category: "fruits", name: "Fresh Apples", unit: "kg", price: 120, image: "🍎", badge: "Organic", available: true },
-  { id: "p2", category: "fruits", name: "Ripe Bananas", unit: "dozen", price: 45, image: "🍌", badge: "Fresh", available: true },
-  { id: "p3", category: "fruits", name: "Sweet Mangoes", unit: "kg", price: 180, image: "🥭", badge: "Seasonal", available: true },
-  { id: "p4", category: "fruits", name: "Watermelon", unit: "piece", price: 60, image: "🍉", badge: null, available: true },
-  { id: "p5", category: "vegetables", name: "Broccoli", unit: "kg", price: 70, image: "🥦", badge: "Organic", available: true },
-  { id: "p6", category: "vegetables", name: "Carrots", unit: "kg", price: 40, image: "🥕", badge: null, available: true },
-  { id: "p7", category: "vegetables", name: "Tomatoes", unit: "kg", price: 35, image: "🍅", badge: "Fresh", available: true },
-  { id: "p8", category: "vegetables", name: "Spinach", unit: "bunch", price: 25, image: "🥬", badge: "Organic", available: true },
-  { id: "p9", category: "dairy", name: "Full Cream Milk", unit: "litre", price: 60, image: "🥛", badge: "Daily Fresh", available: true },
-  { id: "p10", category: "dairy", name: "Amul Butter", unit: "pack", price: 55, image: "🧈", badge: null, available: true },
-  { id: "p11", category: "dairy", name: "Greek Yogurt", unit: "200g", price: 65, image: "🫙", badge: "Probiotic", available: true },
-  { id: "p12", category: "dairy", name: "Cheddar Cheese", unit: "200g", price: 180, image: "🧀", badge: null, available: true },
-  { id: "p13", category: "snacks", name: "Lays Classic", unit: "pack", price: 20, image: "🥔", badge: "Hot Deal", available: true },
-  { id: "p14", category: "snacks", name: "Dark Chocolate", unit: "bar", price: 99, image: "🍫", badge: "Premium", available: true },
-  { id: "p15", category: "snacks", name: "Mixed Nuts", unit: "200g", price: 145, image: "🥜", badge: "Healthy", available: true },
-  { id: "p16", category: "beverages", name: "Orange Juice", unit: "litre", price: 85, image: "🍊", badge: "No Sugar", available: true },
-  { id: "p17", category: "beverages", name: "Green Tea", unit: "box", price: 120, image: "🍵", badge: "Antioxidant", available: true },
-  { id: "p18", category: "beverages", name: "Mineral Water", unit: "1L", price: 20, image: "💧", badge: null, available: true },
-  { id: "p19", category: "bakery", name: "Multigrain Bread", unit: "loaf", price: 50, image: "🍞", badge: "Baked Today", available: true },
-  { id: "p20", category: "bakery", name: "Croissants", unit: "pack of 4", price: 80, image: "🥐", badge: "Fresh", available: true },
-];
-
-// ─── TOAST ────────────────────────────────────────────────────────────────────
-function Toast({ toasts }) {
-  return (
-    <div style={{ position: "fixed", top: 16, left: "50%", transform: "translateX(-50%)", zIndex: 9999, display: "flex", flexDirection: "column", gap: 8, width: "90%", maxWidth: 360, pointerEvents: "none" }}>
-      {toasts.map(t => (
-        <div key={t.id} style={{ background: "#1a1a2e", color: "#fff", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", gap: 10, fontSize: 14, boxShadow: "0 8px 24px rgba(0,0,0,0.3)", animation: "slideDown 0.3s cubic-bezier(0.34,1.56,0.64,1)" }}>
-          <span style={{ fontSize: 20 }}>{t.icon}</span><span>{t.message}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ─── PROVIDER ─────────────────────────────────────────────────────────────────
-function AppProvider({ children }) {
-  const [products, setProducts] = useState(FALLBACK_PRODUCTS);
-  const [categories, setCategories] = useState(FALLBACK_CATEGORIES);
-  const [banners, setBanners] = useState([
-    { id: "b1", title: "Flash Sale! 🔥", subtitle: "Up to 40% off on fruits", bg: "linear-gradient(135deg, #667eea, #764ba2)", active: true },
-    { id: "b2", title: "Free Delivery 🚀", subtitle: "On orders above ₹299", bg: "linear-gradient(135deg, #f093fb, #f5576c)", active: true },
-    { id: "b3", title: "Fresh & Organic 🌿", subtitle: "Farm to doorstep in 10 mins", bg: "linear-gradient(135deg, #4facfe, #00f2fe)", active: true },
-  ]);
-  const [settings, setSettings] = useState({ deliveryFee: 30, platformFee: 5, taxRate: 5, deliveryTime: 8 });
+export default function App() {
+  const [products, setProducts] = useState([]);
+  const [categories, setCategories] = useState([]);
   const [offers, setOffers] = useState([]);
-  const [cart, setCart] = useState(() => { try { return JSON.parse(localStorage.getItem("qm_cart") || "{}"); } catch { return {}; } });
-  const [page, setPage] = useState("home");
-  const [selectedCategory, setSelectedCategory] = useState("all");
-  const [address, setAddress] = useState(null);
-  const [toasts, setToasts] = useState([]);
-  const [searchQuery, setSearchQuery] = useState("");
+  const [banners, setBanners] = useState([]);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+
   const [loading, setLoading] = useState(true);
+  const [placingOrder, setPlacingOrder] = useState(false);
+  const [statusMessage, setStatusMessage] = useState("");
+
+  const [search, setSearch] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState("All");
+  const [promoCode, setPromoCode] = useState("");
   const [appliedOffer, setAppliedOffer] = useState(null);
-  const toastId = useRef(0);
 
-  // ── Firebase real-time listeners ──
-  useEffect(() => {
-    const unsubs = [];
-    // Products
-    unsubs.push(onSnapshot(query(collection(db, "products"), orderBy("name")), snap => {
-      if (!snap.empty) setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      setLoading(false);
-    }, () => setLoading(false)));
-    // Categories
-    unsubs.push(onSnapshot(collection(db, "categories"), snap => {
-      if (!snap.empty) setCategories(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, () => {}));
-    // Banners
-    unsubs.push(onSnapshot(query(collection(db, "banners"), orderBy("order")), snap => {
-      if (!snap.empty) setBanners(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(b => b.active));
-    }, () => {}));
-    // Settings
-    unsubs.push(onSnapshot(doc(db, "config", "settings"), snap => {
-      if (snap.exists()) setSettings(snap.data());
-    }, () => {}));
-    // Offers
-    unsubs.push(onSnapshot(collection(db, "offers"), snap => {
-      if (!snap.empty) setOffers(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(o => o.active));
-    }, () => {}));
-    return () => unsubs.forEach(u => u());
+  const [address, setAddress] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState("Cash on Delivery");
+
+  const [cart, setCart] = useState([]);
+  const [lastOrder, setLastOrder] = useState(null);
+
+  const setSafeStatus = (message) => {
+    setStatusMessage(message);
+    window.clearTimeout(window.__quickmartCustomerStatusTimer);
+    window.__quickmartCustomerStatusTimer = window.setTimeout(() => {
+      setStatusMessage("");
+    }, 2500);
+  };
+
+  const subscribeTable = useCallback((table, handler) => {
+    return supabase
+      .channel(`rt-${table}-${Math.random().toString(36).slice(2)}`)
+      .on("postgres_changes", { event: "*", schema: "public", table }, handler)
+      .subscribe();
   }, []);
 
-  useEffect(() => { localStorage.setItem("qm_cart", JSON.stringify(cart)); }, [cart]);
+  const fetchProducts = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("products")
+      .select("*")
+      .eq("available", true)
+      .order("createdAt", { ascending: false });
 
-  const addToast = useCallback((message, icon = "✅") => {
-    const id = ++toastId.current;
-    setToasts(p => [...p, { id, message, icon }]);
-    setTimeout(() => setToasts(p => p.filter(t => t.id !== id)), 2500);
+    if (error) {
+      console.error("fetchProducts error:", error);
+      return;
+    }
+
+    setProducts(data || []);
   }, []);
 
-  const updateCart = useCallback((productId, delta) => {
-    setCart(prev => {
-      const qty = (prev[productId] || 0) + delta;
-      if (qty <= 0) { const { [productId]: _, ...rest } = prev; return rest; }
-      return { ...prev, [productId]: qty };
-    });
+  const fetchCategories = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("categories")
+      .select("*")
+      .order("sort", { ascending: true });
+
+    if (error) {
+      console.error("fetchCategories error:", error);
+      return;
+    }
+
+    setCategories(data || []);
   }, []);
 
-  const addItem = useCallback((product) => {
-    updateCart(product.id, 1);
-    addToast(`${product.name} added to cart`, "🛒");
-  }, [updateCart, addToast]);
+  const fetchOffers = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("offers")
+      .select("*")
+      .eq("active", true)
+      .order("createdAt", { ascending: false });
 
-  const applyOffer = useCallback((code) => {
-    const offer = offers.find(o => o.code?.toLowerCase() === code.toLowerCase());
-    if (!offer) { addToast("Invalid promo code", "❌"); return false; }
-    setAppliedOffer(offer);
-    addToast(`Promo applied! ${offer.type === "percent" ? offer.discount + "% off" : "₹" + offer.discount + " off"}`, "🎉");
-    return true;
-  }, [offers, addToast]);
+    if (error) {
+      console.error("fetchOffers error:", error);
+      return;
+    }
 
-  const cartCount = Object.values(cart).reduce((a, b) => a + b, 0);
-  const cartItems = products.filter(p => cart[p.id] > 0).map(p => ({ ...p, qty: cart[p.id] }));
-  const subtotal = cartItems.reduce((sum, item) => sum + item.price * item.qty, 0);
-  const deliveryFee = settings.deliveryFee || 30;
-  const platformFee = settings.platformFee || 5;
-  const tax = Math.round(subtotal * (settings.taxRate || 5) / 100);
-  let discount = 0;
-  if (appliedOffer) {
-    discount = appliedOffer.type === "percent" ? Math.round(subtotal * appliedOffer.discount / 100) : appliedOffer.discount;
-    discount = Math.min(discount, subtotal);
-  }
-  const total = Math.max(0, subtotal + deliveryFee + platformFee + tax - discount);
+    setOffers(data || []);
+  }, []);
 
-  const placeOrder = useCallback(async (orderData) => {
-    try {
-      const docRef = await addDoc(collection(db, "orders"), {
-        ...orderData, status: "pending", createdAt: serverTimestamp(), updatedAt: serverTimestamp()
-      });
-      return docRef.id;
-    } catch (e) {
-      console.error("Order save failed:", e);
-      return "local-" + Date.now();
+  const fetchBanners = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("banners")
+      .select("*")
+      .eq("active", true)
+      .order("createdAt", { ascending: false });
+
+    if (error) {
+      console.error("fetchBanners error:", error);
+      return;
+    }
+
+    setBanners(data || []);
+  }, []);
+
+  const fetchSettings = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("config")
+      .select("*")
+      .eq("key", "settings")
+      .single();
+
+    if (error) {
+      console.error("fetchSettings error:", error);
+      return;
+    }
+
+    if (data?.value) {
+      setSettings((prev) => ({ ...prev, ...data.value }));
     }
   }, []);
 
-  return (
-    <AppContext.Provider value={{
-      products, categories, banners, settings, offers, appliedOffer,
-      cart, page, setPage, selectedCategory, setSelectedCategory,
-      address, setAddress, toasts, addToast, updateCart, addItem,
-      cartCount, cartItems, subtotal, deliveryFee, platformFee, tax, discount, total,
-      searchQuery, setSearchQuery, loading, placeOrder, applyOffer, setAppliedOffer, setCart
-    }}>
-      {children}
-      <Toast toasts={toasts} />
-    </AppContext.Provider>
-  );
-}
-
-// ─── ADD BUTTON ───────────────────────────────────────────────────────────────
-function AddButton({ product }) {
-  const { cart, addItem, updateCart } = useContext(AppContext);
-  const qty = cart[product.id] || 0;
-  if (qty === 0) return (
-    <button onClick={() => addItem(product)} style={{ background: "linear-gradient(135deg,#0ea5e9,#06b6d4)", color: "#fff", border: "none", borderRadius: 10, padding: "7px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit", boxShadow: "0 2px 8px rgba(14,165,233,0.3)", whiteSpace: "nowrap" }}>+ ADD</button>
-  );
-  return (
-    <div style={{ display: "flex", alignItems: "center", background: "linear-gradient(135deg,#0ea5e9,#06b6d4)", borderRadius: 10, overflow: "hidden", boxShadow: "0 2px 8px rgba(14,165,233,0.3)" }}>
-      <button onClick={() => updateCart(product.id, -1)} style={{ background: "none", border: "none", color: "#fff", width: 30, height: 32, fontSize: 18, cursor: "pointer", fontWeight: 700, fontFamily: "inherit" }}>−</button>
-      <span style={{ color: "#fff", fontWeight: 700, fontSize: 13, minWidth: 16, textAlign: "center" }}>{qty}</span>
-      <button onClick={() => updateCart(product.id, 1)} style={{ background: "none", border: "none", color: "#fff", width: 30, height: 32, fontSize: 18, cursor: "pointer", fontWeight: 700, fontFamily: "inherit" }}>+</button>
-    </div>
-  );
-}
-
-// ─── PRODUCT CARD ─────────────────────────────────────────────────────────────
-function ProductCard({ product }) {
-  const { categories } = useContext(AppContext);
-  const cat = categories.find(c => c.id === product.category) || {};
-  const isUrl = product.image && product.image.startsWith("http");
-  return (
-    <div style={{ background: "#fff", borderRadius: 16, padding: 12, boxShadow: "0 2px 12px rgba(0,0,0,0.06)", border: "1px solid #f0f0f0", display: "flex", flexDirection: "column", gap: 8, position: "relative", overflow: "hidden" }}>
-      {!product.available && <div style={{ position: "absolute", inset: 0, background: "rgba(255,255,255,0.8)", zIndex: 5, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 16 }}><span style={{ fontWeight: 800, color: "#94a3b8", fontSize: 12 }}>OUT OF STOCK</span></div>}
-      {product.badge && <div style={{ position: "absolute", top: 8, left: 8, background: cat.color || "#0ea5e9", color: "#fff", borderRadius: 6, padding: "2px 7px", fontSize: 10, fontWeight: 700, zIndex: 2 }}>{product.badge}</div>}
-      {product.discount > 0 && <div style={{ position: "absolute", top: 8, right: 8, background: "#ef4444", color: "#fff", borderRadius: 6, padding: "2px 7px", fontSize: 10, fontWeight: 700, zIndex: 2 }}>-{product.discount}%</div>}
-      <div style={{ background: cat.bg || "#f8f8f8", borderRadius: 12, padding: "12px 0", display: "flex", alignItems: "center", justifyContent: "center", minHeight: 80 }}>
-        {isUrl
-          ? <img src={product.image} alt={product.name} style={{ width: 70, height: 70, objectFit: "contain", borderRadius: 8 }} />
-          : <span style={{ fontSize: 52, lineHeight: 1 }}>{product.image || "🛒"}</span>}
-      </div>
-      <div>
-        <p style={{ margin: 0, fontWeight: 600, fontSize: 13, color: "#1a1a2e", lineHeight: 1.3 }}>{product.name}</p>
-        <p style={{ margin: "2px 0 0", fontSize: 11, color: "#94a3b8" }}>per {product.unit}</p>
-      </div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "auto" }}>
-        <div>
-          {product.originalPrice && product.originalPrice > product.price && (
-            <p style={{ margin: 0, fontSize: 11, color: "#94a3b8", textDecoration: "line-through" }}>₹{product.originalPrice}</p>
-          )}
-          <span style={{ fontWeight: 800, fontSize: 15, color: "#1a1a2e" }}>₹{product.price}</span>
-        </div>
-        <AddButton product={product} />
-      </div>
-    </div>
-  );
-}
-
-// ─── MAP MODAL ────────────────────────────────────────────────────────────────
-function MapModal({ onClose, onSave }) {
-  const [mode, setMode] = useState("manual");
-  const [inputAddr, setInputAddr] = useState("");
-  const [detected, setDetected] = useState(null);
-  const [detecting, setDetecting] = useState(false);
-  const mapRef = useRef(null);
-  const mapInstance = useRef(null);
-  const markerRef = useRef(null);
-  const [pinAddr, setPinAddr] = useState("");
-  const mapsLoaded = typeof window !== "undefined" && window.google?.maps;
-
   useEffect(() => {
-    if (mode !== "map" || !mapsLoaded || !mapRef.current) return;
-    const center = { lat: 28.6139, lng: 77.2090 };
-    mapInstance.current = new window.google.maps.Map(mapRef.current, { zoom: 15, center, disableDefaultUI: true });
-    markerRef.current = new window.google.maps.Marker({ map: mapInstance.current, position: center, draggable: true });
-    const geocoder = new window.google.maps.Geocoder();
-    const updateAddr = pos => geocoder.geocode({ location: pos }, (res, s) => setPinAddr(s === "OK" && res[0] ? res[0].formatted_address : `${pos.lat().toFixed(4)}, ${pos.lng().toFixed(4)}`));
-    updateAddr(markerRef.current.getPosition());
-    markerRef.current.addListener("dragend", () => updateAddr(markerRef.current.getPosition()));
-  }, [mode, mapsLoaded]);
+    let mounted = true;
 
-  const detectLoc = () => {
-    setDetecting(true);
-    navigator.geolocation.getCurrentPosition(pos => {
-      if (mapsLoaded) {
-        new window.google.maps.Geocoder().geocode({ location: { lat: pos.coords.latitude, lng: pos.coords.longitude } }, (res, s) => {
-          setDetected(s === "OK" && res[0] ? res[0].formatted_address : `${pos.coords.latitude.toFixed(4)}, ${pos.coords.longitude.toFixed(4)}`);
-          setDetecting(false);
-        });
-      } else { setDetected(`${pos.coords.latitude.toFixed(4)}, ${pos.coords.longitude.toFixed(4)}`); setDetecting(false); }
-    }, () => { setDetected("Could not detect location"); setDetecting(false); });
-  };
+    const init = async () => {
+      setLoading(true);
+      await Promise.all([
+        fetchProducts(),
+        fetchCategories(),
+        fetchOffers(),
+        fetchBanners(),
+        fetchSettings(),
+      ]);
+      if (mounted) setLoading(false);
+    };
 
-  const save = () => {
-    const addr = mode === "detect" ? detected : mode === "map" ? pinAddr : inputAddr;
-    if (!addr) return;
-    onSave(addr); onClose();
-  };
+    init();
 
-  return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 1000, display: "flex", alignItems: "flex-end" }} onClick={onClose}>
-      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: "24px 24px 0 0", width: "100%", maxWidth: 480, margin: "0 auto", padding: "24px 20px 40px", maxHeight: "92vh", overflowY: "auto" }}>
-        <div style={{ width: 40, height: 4, background: "#e2e8f0", borderRadius: 2, margin: "0 auto 20px" }} />
-        <h3 style={{ margin: "0 0 16px", fontSize: 18, fontWeight: 800, color: "#1a1a2e" }}>📍 Select Delivery Address</h3>
-        <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-          {[["detect", "📡 Detect"], ["manual", "✏️ Type"], ["map", "🗺️ Map"]].map(([v, l]) => (
-            <button key={v} onClick={() => setMode(v)} style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: `2px solid ${mode === v ? "#0ea5e9" : "#e2e8f0"}`, background: mode === v ? "#f0f9ff" : "#fff", color: mode === v ? "#0ea5e9" : "#64748b", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>{l}</button>
-          ))}
-        </div>
-        {mode === "detect" && (
-          <div style={{ textAlign: "center", padding: "20px 0" }}>
-            <button onClick={detectLoc} disabled={detecting} style={{ background: "linear-gradient(135deg,#0ea5e9,#06b6d4)", color: "#fff", border: "none", borderRadius: 12, padding: "14px 32px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{detecting ? "Detecting..." : "📡 Detect My Location"}</button>
-            {detected && <p style={{ marginTop: 16, color: "#334155", fontWeight: 600, fontSize: 13 }}>📍 {detected}</p>}
-          </div>
-        )}
-        {mode === "manual" && <textarea value={inputAddr} onChange={e => setInputAddr(e.target.value)} placeholder="House no., Street, Area, City, Pincode..." rows={3} style={{ width: "100%", border: "2px solid #e2e8f0", borderRadius: 12, padding: "12px 14px", fontSize: 14, outline: "none", fontFamily: "inherit", boxSizing: "border-box", resize: "none" }} onFocus={e => e.target.style.borderColor = "#0ea5e9"} onBlur={e => e.target.style.borderColor = "#e2e8f0"} />}
-        {mode === "map" && (
-          <div>
-            {mapsLoaded ? <div ref={mapRef} style={{ height: 240, borderRadius: 12, marginBottom: 10 }} /> : <div style={{ height: 240, borderRadius: 12, background: "#e0f2fe", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 10 }}><p style={{ color: "#0284c7" }}>Loading map...</p></div>}
-            {pinAddr && <p style={{ fontSize: 12, color: "#334155", fontWeight: 600, margin: 0 }}>📍 {pinAddr}</p>}
-          </div>
-        )}
-        <button onClick={save} style={{ width: "100%", background: "linear-gradient(135deg,#0ea5e9,#06b6d4)", color: "#fff", border: "none", borderRadius: 14, padding: "15px 0", fontWeight: 800, fontSize: 16, cursor: "pointer", marginTop: 20, fontFamily: "inherit" }}>✅ Confirm Address</button>
-      </div>
-    </div>
-  );
-}
+    const channels = [
+      subscribeTable("products", fetchProducts),
+      subscribeTable("categories", fetchCategories),
+      subscribeTable("offers", fetchOffers),
+      subscribeTable("banners", fetchBanners),
+      subscribeTable("config", fetchSettings),
+    ];
 
-// ─── HOME PAGE ────────────────────────────────────────────────────────────────
-function HomePage() {
-  const { products, categories, banners, selectedCategory, setSelectedCategory, address, setAddress, searchQuery, setSearchQuery, loading, settings } = useContext(AppContext);
-  const [showMap, setShowMap] = useState(false);
-  const [bannerIdx, setBannerIdx] = useState(0);
-  useEffect(() => { const t = setInterval(() => setBannerIdx(i => (i + 1) % Math.max(banners.length, 1)), 3500); return () => clearInterval(t); }, [banners.length]);
+    return () => {
+      mounted = false;
+      channels.forEach((channel) => supabase.removeChannel(channel));
+    };
+  }, [
+    fetchProducts,
+    fetchCategories,
+    fetchOffers,
+    fetchBanners,
+    fetchSettings,
+    subscribeTable,
+  ]);
 
-  const filtered = products.filter(p => {
-    const catOk = selectedCategory === "all" || p.category === selectedCategory;
-    const searchOk = !searchQuery || p.name.toLowerCase().includes(searchQuery.toLowerCase());
-    return catOk && searchOk && p.available !== false;
-  });
+  const filteredProducts = useMemo(() => {
+    return products.filter((product) => {
+      const matchesCategory =
+        selectedCategory === "All" || product.category === selectedCategory;
 
-  return (
-    <div style={{ paddingBottom: 100 }}>
-      {/* HEADER */}
-      <div style={{ background: "linear-gradient(160deg,#0f172a,#1e293b)", padding: "16px 16px 20px", position: "sticky", top: 0, zIndex: 100 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-              <span style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600, letterSpacing: 1 }}>DELIVERY IN</span>
-              <span style={{ background: "#22c55e", color: "#fff", borderRadius: 6, padding: "1px 7px", fontSize: 10, fontWeight: 800 }}>{settings.deliveryTime || 8} MINS</span>
-            </div>
-            <button onClick={() => setShowMap(true)} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 4, padding: 0 }}>
-              <span style={{ color: "#38bdf8", fontSize: 14 }}>📍</span>
-              <span style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 14, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{address ? address.slice(0, 28) + (address.length > 28 ? "..." : "") : "Select Location"}</span>
-              <span style={{ color: "#94a3b8" }}>▾</span>
-            </button>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{ background: "linear-gradient(135deg,#0ea5e9,#06b6d4)", borderRadius: 10, padding: "6px 12px", cursor: "pointer" }}>
-              <span style={{ color: "#fff", fontSize: 16 }}>👤</span>
-            </div>
-          </div>
-        </div>
-        <div style={{ position: "relative" }}>
-          <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "#94a3b8" }}>🔍</span>
-          <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder='Search groceries...' style={{ width: "100%", background: "#fff", border: "none", borderRadius: 14, padding: "12px 40px 12px 40px", fontSize: 14, fontFamily: "inherit", boxSizing: "border-box", outline: "none", color: "#1e293b", fontWeight: 500 }} />
-          {searchQuery && <button onClick={() => setSearchQuery("")} style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "#94a3b8", border: "none", borderRadius: "50%", width: 20, height: 20, cursor: "pointer", color: "#fff", fontSize: 11, fontFamily: "inherit" }}>✕</button>}
-        </div>
-      </div>
+      const searchable = `${product.name || ""} ${product.category || ""} ${product.description || ""} ${product.badge || ""}`.toLowerCase();
+      const matchesSearch = searchable.includes(search.toLowerCase());
 
-      {/* BANNER */}
-      {!searchQuery && banners.length > 0 && (
-        <div style={{ padding: "14px 16px 0" }}>
-          <div style={{ background: banners[bannerIdx % banners.length]?.bg || "linear-gradient(135deg,#667eea,#764ba2)", borderRadius: 18, padding: "20px", position: "relative", overflow: "hidden", minHeight: 100, transition: "background 0.5s" }}>
-            {banners[bannerIdx % banners.length]?.imageUrl && <img src={banners[bannerIdx % banners.length].imageUrl} alt="" style={{ position: "absolute", right: 0, top: 0, height: "100%", objectFit: "cover", opacity: 0.3 }} />}
-            <p style={{ margin: "0 0 4px", color: "rgba(255,255,255,0.85)", fontSize: 12, fontWeight: 600 }}>{banners[bannerIdx % banners.length]?.subtitle}</p>
-            <h3 style={{ margin: 0, color: "#fff", fontSize: 20, fontWeight: 900 }}>{banners[bannerIdx % banners.length]?.title}</h3>
-            {banners.length > 1 && (
-              <div style={{ display: "flex", gap: 5, marginTop: 12 }}>
-                {banners.map((_, i) => <div key={i} onClick={() => setBannerIdx(i)} style={{ width: i === bannerIdx % banners.length ? 20 : 6, height: 6, borderRadius: 3, background: i === bannerIdx % banners.length ? "#fff" : "rgba(255,255,255,0.4)", cursor: "pointer", transition: "all 0.3s" }} />)}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* CATEGORIES GRID */}
-      {!searchQuery && (
-        <div style={{ padding: "18px 0 4px" }}>
-          <div style={{ padding: "0 16px", marginBottom: 12 }}><h2 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: "#1a1a2e" }}>Categories</h2></div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, padding: "0 16px" }}>
-            {categories.map(cat => (
-              <button key={cat.id} onClick={() => setSelectedCategory(selectedCategory === cat.id ? "all" : cat.id)} style={{ background: selectedCategory === cat.id ? cat.color : cat.bg || "#f8fafc", border: `2px solid ${selectedCategory === cat.id ? cat.color : "transparent"}`, borderRadius: 14, padding: "10px 4px 8px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, transition: "all 0.2s", fontFamily: "inherit" }}>
-                <span style={{ fontSize: 24 }}>{cat.emoji}</span>
-                <span style={{ fontSize: 10, fontWeight: 700, color: selectedCategory === cat.id ? "#fff" : cat.color || "#64748b", lineHeight: 1, textAlign: "center" }}>{cat.name}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* FILTER PILLS */}
-      <div style={{ overflowX: "auto", padding: "14px 16px 0", scrollbarWidth: "none" }}>
-        <div style={{ display: "flex", gap: 8, width: "max-content" }}>
-          {[{ id: "all", name: "All Items", emoji: "✨", color: "#0ea5e9", bg: "#f0f9ff" }, ...categories].map(cat => (
-            <button key={cat.id} onClick={() => setSelectedCategory(cat.id)} style={{ background: selectedCategory === cat.id ? cat.color : "#fff", color: selectedCategory === cat.id ? "#fff" : "#64748b", border: `2px solid ${selectedCategory === cat.id ? cat.color : "#e2e8f0"}`, borderRadius: 50, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", fontFamily: "inherit", transition: "all 0.2s", boxShadow: selectedCategory === cat.id ? `0 4px 12px ${cat.color}40` : "none" }}>
-              {cat.emoji} {cat.name}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* PRODUCTS */}
-      <div style={{ padding: "14px 16px 0" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: "#1a1a2e" }}>
-            {searchQuery ? `"${searchQuery}"` : selectedCategory !== "all" ? categories.find(c => c.id === selectedCategory)?.name || "Products" : "All Products"}
-          </h2>
-          <span style={{ color: "#94a3b8", fontSize: 12 }}>{filtered.length} items</span>
-        </div>
-        {loading ? (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
-            {[1,2,3,4,5,6].map(i => <div key={i} style={{ background: "#fff", borderRadius: 16, height: 200, animation: "pulse 1.5s infinite" }} />)}
-          </div>
-        ) : filtered.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "60px 20px" }}>
-            <div style={{ fontSize: 64, marginBottom: 12 }}>🔍</div>
-            <h3 style={{ color: "#1a1a2e", margin: "0 0 8px" }}>Nothing found</h3>
-            <p style={{ color: "#94a3b8", margin: 0 }}>Try a different search or category</p>
-          </div>
-        ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
-            {filtered.map(p => <ProductCard key={p.id} product={p} />)}
-          </div>
-        )}
-      </div>
-
-      {showMap && <MapModal onClose={() => setShowMap(false)} onSave={setAddress} />}
-    </div>
-  );
-}
-
-// ─── CART PAGE ────────────────────────────────────────────────────────────────
-function CartPage() {
-  const { cartItems, updateCart, subtotal, deliveryFee, platformFee, tax, discount, total, setPage, applyOffer, appliedOffer, setAppliedOffer } = useContext(AppContext);
-  const [promoInput, setPromoInput] = useState("");
-  const [promoLoading, setPromoLoading] = useState(false);
-
-  const handleApply = () => {
-    setPromoLoading(true);
-    setTimeout(() => { applyOffer(promoInput); setPromoLoading(false); }, 600);
-  };
-
-  if (cartItems.length === 0) return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "80vh", padding: 32, textAlign: "center" }}>
-      <div style={{ fontSize: 80, marginBottom: 16 }}>🛒</div>
-      <h2 style={{ color: "#1a1a2e", margin: "0 0 8px" }}>Your cart is empty</h2>
-      <p style={{ color: "#94a3b8", margin: "0 0 28px" }}>Add some fresh groceries!</p>
-      <button onClick={() => setPage("home")} style={{ background: "linear-gradient(135deg,#0ea5e9,#06b6d4)", color: "#fff", border: "none", borderRadius: 14, padding: "14px 32px", fontWeight: 800, fontSize: 15, cursor: "pointer", fontFamily: "inherit" }}>Shop Now</button>
-    </div>
-  );
-
-  return (
-    <div style={{ paddingBottom: 120 }}>
-      <div style={{ background: "#fff", borderBottom: "1px solid #f0f0f0", padding: "16px", position: "sticky", top: 0, zIndex: 50 }}>
-        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: "#1a1a2e" }}>🛒 Cart ({cartItems.length})</h2>
-      </div>
-      <div style={{ margin: "12px 16px", background: "linear-gradient(135deg,#f0fdf4,#dcfce7)", borderRadius: 14, padding: "12px 16px", display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ fontSize: 22 }}>⚡</span>
-        <div><p style={{ margin: 0, fontWeight: 700, fontSize: 13, color: "#166534" }}>Express Delivery Active</p><p style={{ margin: 0, fontSize: 11, color: "#4ade80" }}>Items arriving fresh & fast</p></div>
-      </div>
-      <div style={{ padding: "0 16px", display: "flex", flexDirection: "column", gap: 10 }}>
-        {cartItems.map(item => (
-          <div key={item.id} style={{ background: "#fff", borderRadius: 16, padding: 14, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", display: "flex", gap: 12, alignItems: "center" }}>
-            <div style={{ background: "#f8fafc", borderRadius: 10, padding: 6, width: 52, height: 52, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-              {item.image?.startsWith("http") ? <img src={item.image} alt={item.name} style={{ width: 40, height: 40, objectFit: "contain" }} /> : <span style={{ fontSize: 32 }}>{item.image || "🛒"}</span>}
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <p style={{ margin: "0 0 2px", fontWeight: 700, fontSize: 13, color: "#1a1a2e", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.name}</p>
-              <p style={{ margin: 0, fontSize: 11, color: "#94a3b8" }}>₹{item.price} / {item.unit}</p>
-              <p style={{ margin: "3px 0 0", fontWeight: 800, fontSize: 14, color: "#0ea5e9" }}>₹{item.price * item.qty}</p>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", background: "#f1f5f9", borderRadius: 10, overflow: "hidden", flexShrink: 0 }}>
-              <button onClick={() => updateCart(item.id, -1)} style={{ background: "none", border: "none", width: 32, height: 32, fontSize: 18, cursor: "pointer", color: "#e11d48", fontWeight: 700, fontFamily: "inherit" }}>−</button>
-              <span style={{ fontWeight: 800, fontSize: 14, minWidth: 18, textAlign: "center" }}>{item.qty}</span>
-              <button onClick={() => updateCart(item.id, 1)} style={{ background: "none", border: "none", width: 32, height: 32, fontSize: 18, cursor: "pointer", color: "#22c55e", fontWeight: 700, fontFamily: "inherit" }}>+</button>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* PROMO */}
-      <div style={{ margin: "14px 16px 0", background: "#fff", borderRadius: 16, padding: "14px 16px", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
-        {appliedOffer ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ fontSize: 20 }}>🎉</span>
-            <span style={{ flex: 1, color: "#166534", fontWeight: 700, fontSize: 13 }}>{appliedOffer.code} applied! Saving ₹{discount}</span>
-            <button onClick={() => setAppliedOffer(null)} style={{ color: "#e11d48", fontWeight: 700, fontSize: 12, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit" }}>Remove</button>
-          </div>
-        ) : (
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ fontSize: 18 }}>🏷️</span>
-            <input value={promoInput} onChange={e => setPromoInput(e.target.value.toUpperCase())} placeholder="Promo code" style={{ flex: 1, border: "none", outline: "none", fontSize: 14, fontFamily: "inherit", background: "none", fontWeight: 600, letterSpacing: 1 }} />
-            <button onClick={handleApply} disabled={!promoInput || promoLoading} style={{ color: promoInput ? "#0ea5e9" : "#cbd5e1", fontWeight: 800, fontSize: 13, background: "none", border: "none", cursor: promoInput ? "pointer" : "default", fontFamily: "inherit" }}>{promoLoading ? "..." : "APPLY"}</button>
-          </div>
-        )}
-      </div>
-
-      {/* BILL */}
-      <div style={{ margin: "14px 16px 0", background: "#fff", borderRadius: 16, padding: 16, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
-        <h3 style={{ margin: "0 0 14px", fontSize: 15, fontWeight: 800, color: "#1a1a2e" }}>Bill Summary</h3>
-        {[["Item Total", `₹${subtotal}`], ["Delivery Fee", `₹${deliveryFee}`], ["Platform Fee", `₹${platformFee}`], [`GST & Taxes`, `₹${tax}`]].map(([l, v]) => (
-          <div key={l} style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-            <span style={{ color: "#64748b", fontSize: 14 }}>{l}</span>
-            <span style={{ color: "#334155", fontWeight: 600, fontSize: 14 }}>{v}</span>
-          </div>
-        ))}
-        {discount > 0 && (
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-            <span style={{ color: "#22c55e", fontSize: 14 }}>Promo Discount</span>
-            <span style={{ color: "#22c55e", fontWeight: 700, fontSize: 14 }}>−₹{discount}</span>
-          </div>
-        )}
-        <div style={{ borderTop: "2px dashed #e2e8f0", margin: "10px 0", paddingTop: 12, display: "flex", justifyContent: "space-between" }}>
-          <span style={{ fontWeight: 800, fontSize: 16 }}>Grand Total</span>
-          <span style={{ fontWeight: 900, fontSize: 18, color: "#0ea5e9" }}>₹{total}</span>
-        </div>
-      </div>
-
-      <div style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, padding: 16, background: "#fff", borderTop: "1px solid #f0f0f0", boxSizing: "border-box" }}>
-        <button onClick={() => setPage("checkout")} style={{ width: "100%", background: "linear-gradient(135deg,#0ea5e9,#06b6d4)", color: "#fff", border: "none", borderRadius: 16, padding: "16px 24px", fontWeight: 800, fontSize: 16, cursor: "pointer", fontFamily: "inherit", display: "flex", justifyContent: "space-between", alignItems: "center", boxShadow: "0 6px 20px rgba(14,165,233,0.4)" }}>
-          <span>Proceed to Checkout</span>
-          <span style={{ background: "rgba(255,255,255,0.2)", borderRadius: 8, padding: "3px 12px" }}>₹{total}</span>
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ─── CHECKOUT PAGE ────────────────────────────────────────────────────────────
-function CheckoutPage() {
-  const { cartItems, subtotal, deliveryFee, platformFee, tax, discount, total, address, setAddress, setPage, addToast, placeOrder, setCart, appliedOffer } = useContext(AppContext);
-  const [showMap, setShowMap] = useState(false);
-  const [placed, setPlaced] = useState(false);
-  const [orderId, setOrderId] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [payMethod, setPayMethod] = useState("upi");
-
-  const handleOrder = async () => {
-    if (!address) { addToast("Please add delivery address", "📍"); return; }
-    setLoading(true);
-    const id = await placeOrder({
-      items: cartItems.map(i => ({ id: i.id, name: i.name, price: i.price, qty: i.qty, unit: i.unit })),
-      subtotal, deliveryFee, platformFee, tax, discount, total, address,
-      paymentMethod: payMethod, promoCode: appliedOffer?.code || null
+      return matchesCategory && matchesSearch;
     });
-    setOrderId(id);
-    setCart({});
-    localStorage.removeItem("qm_cart");
-    setLoading(false);
-    setPlaced(true);
-    addToast("Order placed! 🎉", "✅");
+  }, [products, selectedCategory, search]);
+
+  const addToCart = (product) => {
+    setCart((prev) => {
+      const existing = prev.find((item) => item.id === product.id);
+
+      if (existing) {
+        return prev.map((item) =>
+          item.id === product.id
+            ? {
+                ...item,
+                quantity: item.quantity + 1,
+              }
+            : item
+        );
+      }
+
+      return [
+        ...prev,
+        {
+          id: product.id,
+          name: product.name,
+          price: Number(product.price || 0),
+          image: product.image || "",
+          unit: product.unit || "piece",
+          category: product.category || "",
+          quantity: 1,
+        },
+      ];
+    });
+
+    setSafeStatus(`${product.name} added to cart.`);
   };
 
-  if (placed) return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 32, textAlign: "center", background: "#f8fafc" }}>
-      <div style={{ fontSize: 80, marginBottom: 16 }}>🎉</div>
-      <h2 style={{ color: "#1a1a2e", margin: "0 0 8px", fontSize: 24, fontWeight: 900 }}>Order Confirmed!</h2>
-      <p style={{ color: "#64748b", margin: "0 0 6px" }}>Your groceries are being prepared</p>
-      <p style={{ color: "#94a3b8", fontSize: 12, margin: "0 0 20px" }}>Order ID: {orderId}</p>
-      <div style={{ background: "#f0fdf4", borderRadius: 16, padding: "14px 24px", marginBottom: 24, border: "1px solid #bbf7d0" }}>
-        <p style={{ color: "#166534", fontWeight: 800, margin: "0 0 4px" }}>⚡ Estimated Delivery: ~8 minutes</p>
-        <p style={{ color: "#4ade80", margin: 0, fontSize: 12 }}>You'll receive live updates shortly</p>
+  const incrementQty = (id) => {
+    setCart((prev) =>
+      prev.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              quantity: item.quantity + 1,
+            }
+          : item
+      )
+    );
+  };
+
+  const decrementQty = (id) => {
+    setCart((prev) =>
+      prev
+        .map((item) =>
+          item.id === id
+            ? {
+                ...item,
+                quantity: item.quantity - 1,
+              }
+            : item
+        )
+        .filter((item) => item.quantity > 0)
+    );
+  };
+
+  const removeFromCart = (id) => {
+    setCart((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  const clearCart = () => {
+    setCart([]);
+    setAppliedOffer(null);
+    setPromoCode("");
+  };
+
+  const subtotal = useMemo(() => {
+    return cart.reduce(
+      (sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0),
+      0
+    );
+  }, [cart]);
+
+  const discountAmount = useMemo(() => {
+    if (!appliedOffer) return 0;
+
+    if (appliedOffer.type === "percent") {
+      return Number(((subtotal * Number(appliedOffer.discount || 0)) / 100).toFixed(2));
+    }
+
+    if (appliedOffer.type === "flat") {
+      return Number(appliedOffer.discount || 0);
+    }
+
+    return 0;
+  }, [appliedOffer, subtotal]);
+
+  const taxAmount = useMemo(() => {
+    const taxable = Math.max(subtotal - discountAmount, 0);
+    return Number(((taxable * Number(settings.taxRate || 0)) / 100).toFixed(2));
+  }, [subtotal, discountAmount, settings.taxRate]);
+
+  const deliveryFee = Number(settings.deliveryFee || 0);
+  const platformFee = Number(settings.platformFee || 0);
+
+  const total = useMemo(() => {
+    return Number(
+      Math.max(subtotal - discountAmount, 0) + taxAmount + deliveryFee + platformFee
+    ).toFixed(2);
+  }, [subtotal, discountAmount, taxAmount, deliveryFee, platformFee]);
+
+  const applyPromoCode = () => {
+    if (!promoCode.trim()) {
+      alert("Enter a promo code.");
+      return;
+    }
+
+    const matched = offers.find(
+      (offer) => offer.code?.toLowerCase() === promoCode.trim().toLowerCase()
+    );
+
+    if (!matched) {
+      alert("Invalid promo code.");
+      setAppliedOffer(null);
+      return;
+    }
+
+    if (subtotal < Number(matched.minOrder || 0)) {
+      alert(`Minimum order for this offer is ₹${matched.minOrder}`);
+      setAppliedOffer(null);
+      return;
+    }
+
+    setAppliedOffer(matched);
+    setSafeStatus(`Offer ${matched.code} applied.`);
+  };
+
+  const placeOrder = async () => {
+    if (!cart.length) {
+      alert("Your cart is empty.");
+      return;
+    }
+
+    if (!address.trim()) {
+      alert("Please enter delivery address.");
+      return;
+    }
+
+    setPlacingOrder(true);
+
+    const orderPayload = {
+      items: cart.map((item) => ({
+        id: item.id,
+        name: item.name,
+        price: Number(item.price || 0),
+        quantity: Number(item.quantity || 0),
+        total: Number(item.price || 0) * Number(item.quantity || 0),
+        unit: item.unit || "piece",
+        image: item.image || "",
+        category: item.category || "",
+      })),
+      subtotal: Number(subtotal.toFixed(2)),
+      deliveryFee: Number(deliveryFee.toFixed(2)),
+      platformFee: Number(platformFee.toFixed(2)),
+      tax: Number(taxAmount.toFixed(2)),
+      discount: Number(discountAmount.toFixed(2)),
+      total: Number(total.toFixed(2)),
+      address: address.trim(),
+      paymentMethod,
+      promoCode: appliedOffer?.code || null,
+      status: "pending",
+    };
+
+    const { data, error } = await supabase
+      .from("orders")
+      .insert([orderPayload])
+      .select()
+      .single();
+
+    setPlacingOrder(false);
+
+    if (error) {
+      console.error("placeOrder error:", error);
+      alert(error.message);
+      return;
+    }
+
+    setLastOrder(data);
+    clearCart();
+    setAddress("");
+    setPaymentMethod("Cash on Delivery");
+    setSafeStatus("Order placed successfully.");
+  };
+
+  if (loading) {
+    return (
+      <div style={styles.page}>
+        <h1 style={styles.heading}>QuickMart</h1>
+        <p>Loading products...</p>
       </div>
-      <div style={{ background: "#fff", borderRadius: 16, padding: 20, boxShadow: "0 4px 20px rgba(0,0,0,0.08)", marginBottom: 28, width: "100%", maxWidth: 300 }}>
-        <p style={{ color: "#94a3b8", fontSize: 11, margin: "0 0 4px", letterSpacing: 1 }}>AMOUNT PAID</p>
-        <p style={{ color: "#0ea5e9", fontSize: 32, fontWeight: 900, margin: 0 }}>₹{total}</p>
-      </div>
-      <button onClick={() => setPage("home")} style={{ background: "linear-gradient(135deg,#0ea5e9,#06b6d4)", color: "#fff", border: "none", borderRadius: 14, padding: "14px 32px", fontWeight: 800, fontSize: 15, cursor: "pointer", fontFamily: "inherit" }}>Continue Shopping</button>
-    </div>
-  );
+    );
+  }
 
   return (
-    <div style={{ paddingBottom: 120 }}>
-      <div style={{ background: "#fff", borderBottom: "1px solid #f0f0f0", padding: 16, position: "sticky", top: 0, zIndex: 50 }}>
-        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: "#1a1a2e" }}>Checkout</h2>
-      </div>
+    <div style={styles.page}>
+      <h1 style={styles.heading}>QuickMart</h1>
 
-      {/* ADDRESS */}
-      <div style={{ margin: "16px 16px 0" }}>
-        <p style={{ margin: "0 0 8px", fontSize: 12, fontWeight: 700, color: "#64748b", letterSpacing: 1 }}>DELIVERY ADDRESS</p>
-        <div style={{ background: "#fff", borderRadius: 16, padding: "14px 16px", boxShadow: "0 2px 8px rgba(0,0,0,0.06)", display: "flex", gap: 12 }}>
-          <span style={{ fontSize: 22, marginTop: 2 }}>📍</span>
-          <div style={{ flex: 1 }}>
-            {address ? <><p style={{ margin: "0 0 4px", fontWeight: 700, fontSize: 14, color: "#1a1a2e" }}>Deliver Here</p><p style={{ margin: 0, fontSize: 13, color: "#64748b", lineHeight: 1.5 }}>{address}</p></> : <p style={{ margin: 0, color: "#94a3b8", fontSize: 14 }}>No address added</p>}
-          </div>
-          <button onClick={() => setShowMap(true)} style={{ color: "#0ea5e9", fontWeight: 700, fontSize: 12, background: "none", border: "1px solid #0ea5e9", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}>{address ? "Change" : "Add"}</button>
-        </div>
-      </div>
+      {statusMessage ? <div style={styles.statusBox}>{statusMessage}</div> : null}
 
-      {/* ITEMS */}
-      <div style={{ margin: "16px 16px 0" }}>
-        <p style={{ margin: "0 0 8px", fontSize: 12, fontWeight: 700, color: "#64748b", letterSpacing: 1 }}>ORDER ITEMS ({cartItems.length})</p>
-        <div style={{ background: "#fff", borderRadius: 16, overflow: "hidden", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
-          {cartItems.map((item, idx) => (
-            <div key={item.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: idx < cartItems.length - 1 ? "1px solid #f8fafc" : "none" }}>
-              <span style={{ fontSize: 24 }}>{item.image?.startsWith("http") ? "" : (item.image || "🛒")}</span>
-              {item.image?.startsWith("http") && <img src={item.image} alt="" style={{ width: 32, height: 32, objectFit: "contain" }} />}
-              <div style={{ flex: 1 }}><p style={{ margin: 0, fontWeight: 600, fontSize: 13, color: "#1a1a2e" }}>{item.name}</p><p style={{ margin: 0, fontSize: 11, color: "#94a3b8" }}>× {item.qty}</p></div>
-              <span style={{ fontWeight: 700, fontSize: 14, color: "#334155" }}>₹{item.price * item.qty}</span>
+      {banners.length > 0 ? (
+        <div style={styles.bannerWrap}>
+          {banners.slice(0, 3).map((banner) => (
+            <div
+              key={banner.id}
+              style={{
+                ...styles.banner,
+                background: banner.bg || "linear-gradient(135deg, #2563eb, #0f172a)",
+              }}
+            >
+              <div>
+                <h3 style={{ marginBottom: 6 }}>{banner.title || "QuickMart Offer"}</h3>
+                <p style={{ opacity: 0.9 }}>{banner.subtitle || "Fast grocery delivery"}</p>
+              </div>
+              {banner.image ? (
+                <img
+                  src={banner.image}
+                  alt={banner.title || "Banner"}
+                  style={styles.bannerImage}
+                />
+              ) : null}
             </div>
           ))}
         </div>
+      ) : null}
+
+      <div style={styles.topSection}>
+        <input
+          style={styles.input}
+          placeholder="Search groceries..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+
+        <select
+          style={styles.input}
+          value={selectedCategory}
+          onChange={(e) => setSelectedCategory(e.target.value)}
+        >
+          <option value="All">All Categories</option>
+          {categories.map((cat) => (
+            <option key={cat.id} value={cat.name}>
+              {cat.emoji ? `${cat.emoji} ` : ""}
+              {cat.name}
+            </option>
+          ))}
+        </select>
       </div>
 
-      {/* PAYMENT */}
-      <div style={{ margin: "16px 16px 0", background: "#fff", borderRadius: 16, padding: 16, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
-        <p style={{ margin: "0 0 12px", fontSize: 12, fontWeight: 700, color: "#64748b", letterSpacing: 1 }}>PAYMENT METHOD</p>
-        {[["upi", "💳 UPI / Card"], ["cod", "💵 Cash on Delivery"]].map(([val, label]) => (
-          <div key={val} onClick={() => setPayMethod(val)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", cursor: "pointer", borderBottom: val === "upi" ? "1px solid #f1f5f9" : "none" }}>
-            <div style={{ width: 18, height: 18, borderRadius: "50%", border: `2px solid ${payMethod === val ? "#0ea5e9" : "#cbd5e1"}`, background: payMethod === val ? "#0ea5e9" : "#fff", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              {payMethod === val && <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff" }} />}
-            </div>
-            <span style={{ fontSize: 14, fontWeight: 500, color: "#334155" }}>{label}</span>
-          </div>
-        ))}
-      </div>
-
-      {/* BILL */}
-      <div style={{ margin: "16px 16px 0", background: "#fff", borderRadius: 16, padding: 16, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
-        <h3 style={{ margin: "0 0 14px", fontSize: 15, fontWeight: 800, color: "#1a1a2e" }}>Payment Summary</h3>
-        {[["Subtotal", subtotal], ["Delivery Fee", deliveryFee], ["Platform Fee", platformFee], ["Taxes", tax]].map(([l, v]) => (
-          <div key={l} style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-            <span style={{ color: "#64748b", fontSize: 14 }}>{l}</span>
-            <span style={{ color: "#334155", fontWeight: 600, fontSize: 14 }}>₹{v}</span>
-          </div>
-        ))}
-        {discount > 0 && <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}><span style={{ color: "#22c55e", fontSize: 14 }}>Discount</span><span style={{ color: "#22c55e", fontWeight: 700, fontSize: 14 }}>−₹{discount}</span></div>}
-        <div style={{ borderTop: "2px solid #f1f5f9", marginTop: 10, paddingTop: 12, display: "flex", justifyContent: "space-between" }}>
-          <span style={{ fontWeight: 800, fontSize: 16 }}>Total</span>
-          <span style={{ fontWeight: 900, fontSize: 20, color: "#0ea5e9" }}>₹{total}</span>
-        </div>
-      </div>
-
-      <div style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, padding: 16, background: "#fff", borderTop: "1px solid #f0f0f0", boxSizing: "border-box" }}>
-        <button onClick={handleOrder} disabled={loading} style={{ width: "100%", background: loading ? "#94a3b8" : "linear-gradient(135deg,#22c55e,#16a34a)", color: "#fff", border: "none", borderRadius: 16, padding: "16px 0", fontWeight: 800, fontSize: 16, cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit", boxShadow: "0 6px 20px rgba(34,197,94,0.4)", transition: "all 0.3s" }}>
-          {loading ? "Placing Order..." : `Place Order · ₹${total}`}
+      <h2>Categories</h2>
+      <div style={styles.categoryRow}>
+        <button
+          style={{
+            ...styles.categoryChip,
+            ...(selectedCategory === "All" ? styles.categoryChipActive : {}),
+          }}
+          onClick={() => setSelectedCategory("All")}
+        >
+          All
         </button>
+        {categories.map((cat) => (
+          <button
+            key={cat.id}
+            style={{
+              ...styles.categoryChip,
+              ...(selectedCategory === cat.name ? styles.categoryChipActive : {}),
+            }}
+            onClick={() => setSelectedCategory(cat.name)}
+          >
+            {cat.emoji ? `${cat.emoji} ` : ""}
+            {cat.name}
+          </button>
+        ))}
       </div>
-      {showMap && <MapModal onClose={() => setShowMap(false)} onSave={setAddress} />}
-    </div>
-  );
-}
 
-// ─── ORDERS PAGE ──────────────────────────────────────────────────────────────
-function OrdersPage() {
-  const [orders, setOrders] = useState([]);
-  const [loading, setLoading] = useState(true);
+      <h2>Products</h2>
+      <div style={styles.productGrid}>
+        {filteredProducts.map((product) => (
+          <div key={product.id} style={styles.productCard}>
+            {product.image ? (
+              <img src={product.image} alt={product.name} style={styles.productImage} />
+            ) : (
+              <div style={styles.productImagePlaceholder}>No Image</div>
+            )}
 
-  useEffect(() => {
-    const unsub = onSnapshot(query(collection(db, "orders"), orderBy("createdAt", "desc")), snap => {
-      setOrders(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      setLoading(false);
-    }, () => setLoading(false));
-    return () => unsub();
-  }, []);
+            <div style={{ flex: 1 }}>
+              <h3 style={{ marginBottom: 6 }}>{product.name}</h3>
+              <div style={styles.smallText}>{product.category}</div>
 
-  const STATUS_COLORS = { pending: "#f59f00", confirmed: "#0ea5e9", preparing: "#8b5cf6", out_for_delivery: "#f97316", delivered: "#22c55e", cancelled: "#ef4444" };
-  const STATUS_LABELS = { pending: "⏳ Pending", confirmed: "✅ Confirmed", preparing: "👨‍🍳 Preparing", out_for_delivery: "🛵 On the Way", delivered: "📦 Delivered", cancelled: "❌ Cancelled" };
+              {product.badge ? <div style={styles.badge}>{product.badge}</div> : null}
 
-  return (
-    <div style={{ paddingBottom: 80 }}>
-      <div style={{ background: "#fff", borderBottom: "1px solid #f0f0f0", padding: 16, position: "sticky", top: 0, zIndex: 50 }}>
-        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: "#1a1a2e" }}>📦 My Orders</h2>
-      </div>
-      {loading ? <div style={{ textAlign: "center", padding: 40 }}><p style={{ color: "#94a3b8" }}>Loading orders...</p></div>
-        : orders.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "60px 32px" }}>
-            <div style={{ fontSize: 64, marginBottom: 16 }}>📭</div>
-            <h3 style={{ color: "#1a1a2e", margin: "0 0 8px" }}>No orders yet</h3>
-            <p style={{ color: "#94a3b8" }}>Your order history will appear here</p>
+              <div style={styles.priceRow}>
+                <strong>₹{Number(product.price || 0).toFixed(2)}</strong>
+                {Number(product.originalPrice || 0) > Number(product.price || 0) ? (
+                  <span style={styles.originalPrice}>
+                    ₹{Number(product.originalPrice || 0).toFixed(2)}
+                  </span>
+                ) : null}
+              </div>
+
+              <div style={styles.smallText}>Per {product.unit || "piece"}</div>
+
+              {product.description ? (
+                <p style={styles.description}>{product.description}</p>
+              ) : null}
+
+              <button style={styles.button} onClick={() => addToCart(product)}>
+                Add to Cart
+              </button>
+            </div>
           </div>
-        ) : (
-          <div style={{ padding: "16px 16px 0", display: "flex", flexDirection: "column", gap: 12 }}>
-            {orders.map(order => (
-              <div key={order.id} style={{ background: "#fff", borderRadius: 16, padding: 16, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-                  <div><p style={{ margin: 0, fontWeight: 700, fontSize: 14, color: "#1a1a2e" }}>Order #{order.id?.slice(-6).toUpperCase()}</p><p style={{ margin: "2px 0 0", fontSize: 11, color: "#94a3b8" }}>{order.createdAt?.toDate ? order.createdAt.toDate().toLocaleDateString() : "Recent"}</p></div>
-                  <span style={{ background: `${STATUS_COLORS[order.status] || "#94a3b8"}20`, color: STATUS_COLORS[order.status] || "#94a3b8", borderRadius: 8, padding: "4px 10px", fontSize: 12, fontWeight: 700 }}>{STATUS_LABELS[order.status] || order.status}</span>
+        ))}
+      </div>
+
+      <hr style={styles.hr} />
+
+      <h2>Offers</h2>
+      {offers.length === 0 ? (
+        <p>No active offers.</p>
+      ) : (
+        <div style={styles.offerList}>
+          {offers.map((offer) => (
+            <div key={offer.id} style={styles.offerCard}>
+              <div>
+                <strong>{offer.code}</strong>
+                <div style={styles.smallText}>{offer.title || "Promo offer"}</div>
+                <div style={styles.smallText}>
+                  {offer.type === "percent"
+                    ? `${offer.discount}% off`
+                    : `₹${offer.discount} off`}
                 </div>
-                <div style={{ display: "flex", gap: 4, marginBottom: 10, flexWrap: "wrap" }}>
-                  {(order.items || []).slice(0, 4).map((item, i) => <span key={i} style={{ background: "#f8fafc", borderRadius: 8, padding: "3px 8px", fontSize: 12, color: "#64748b" }}>{item.name} ×{item.qty}</span>)}
-                  {(order.items || []).length > 4 && <span style={{ background: "#f8fafc", borderRadius: 8, padding: "3px 8px", fontSize: 12, color: "#64748b" }}>+{order.items.length - 4} more</span>}
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 12, color: "#94a3b8" }}>📍 {order.address?.slice(0, 30) || "Address not saved"}...</span>
-                  <span style={{ fontWeight: 800, fontSize: 16, color: "#0ea5e9" }}>₹{order.total}</span>
+                <div style={styles.smallText}>
+                  Min order: ₹{Number(offer.minOrder || 0).toFixed(2)}
                 </div>
               </div>
-            ))}
+              <button
+                style={styles.buttonSecondary}
+                onClick={() => {
+                  setPromoCode(offer.code || "");
+                  setAppliedOffer(offer);
+                  setSafeStatus(`Offer ${offer.code} selected.`);
+                }}
+              >
+                Use
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <hr style={styles.hr} />
+
+      <h2>Cart</h2>
+      {cart.length === 0 ? (
+        <p>Your cart is empty.</p>
+      ) : (
+        <div style={styles.cartWrap}>
+          {cart.map((item) => (
+            <div key={item.id} style={styles.cartItem}>
+              <div style={{ flex: 1 }}>
+                <strong>{item.name}</strong>
+                <div style={styles.smallText}>
+                  ₹{Number(item.price || 0).toFixed(2)} × {item.quantity}
+                </div>
+                <div style={styles.smallText}>
+                  Item total: ₹
+                  {(Number(item.price || 0) * Number(item.quantity || 0)).toFixed(2)}
+                </div>
+              </div>
+
+              <div style={styles.qtyControls}>
+                <button style={styles.qtyBtn} onClick={() => decrementQty(item.id)}>
+                  -
+                </button>
+                <span>{item.quantity}</span>
+                <button style={styles.qtyBtn} onClick={() => incrementQty(item.id)}>
+                  +
+                </button>
+                <button
+                  style={styles.removeBtn}
+                  onClick={() => removeFromCart(item.id)}
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          ))}
+
+          <div style={styles.checkoutBox}>
+            <h3 style={{ marginBottom: 12 }}>Checkout</h3>
+
+            <div style={styles.inlineRow}>
+              <input
+                style={styles.input}
+                placeholder="Promo code"
+                value={promoCode}
+                onChange={(e) => setPromoCode(e.target.value)}
+              />
+              <button style={styles.buttonSecondary} onClick={applyPromoCode}>
+                Apply
+              </button>
+            </div>
+
+            {appliedOffer ? (
+              <div style={styles.appliedOffer}>
+                Applied: <strong>{appliedOffer.code}</strong>
+              </div>
+            ) : null}
+
+            <textarea
+              style={{ ...styles.input, minHeight: 90, resize: "vertical", width: "100%" }}
+              placeholder="Enter delivery address"
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+            />
+
+            <select
+              style={styles.input}
+              value={paymentMethod}
+              onChange={(e) => setPaymentMethod(e.target.value)}
+            >
+              <option>Cash on Delivery</option>
+              <option>UPI</option>
+              <option>Card on Delivery</option>
+            </select>
+
+            <div style={styles.billRow}>
+              <span>Subtotal</span>
+              <span>₹{subtotal.toFixed(2)}</span>
+            </div>
+            <div style={styles.billRow}>
+              <span>Discount</span>
+              <span>- ₹{discountAmount.toFixed(2)}</span>
+            </div>
+            <div style={styles.billRow}>
+              <span>Delivery Fee</span>
+              <span>₹{deliveryFee.toFixed(2)}</span>
+            </div>
+            <div style={styles.billRow}>
+              <span>Platform Fee</span>
+              <span>₹{platformFee.toFixed(2)}</span>
+            </div>
+            <div style={styles.billRow}>
+              <span>Tax ({Number(settings.taxRate || 0)}%)</span>
+              <span>₹{taxAmount.toFixed(2)}</span>
+            </div>
+            <div style={{ ...styles.billRow, ...styles.billTotal }}>
+              <span>Total</span>
+              <span>₹{total.toFixed(2)}</span>
+            </div>
+
+            <div style={styles.smallText}>
+              Estimated delivery in {Number(settings.deliveryTime || 0)} mins
+            </div>
+
+            <div style={styles.inlineRow}>
+              <button
+                style={styles.button}
+                onClick={placeOrder}
+                disabled={placingOrder}
+              >
+                {placingOrder ? "Placing Order..." : "Place Order"}
+              </button>
+              <button style={styles.buttonDanger} onClick={clearCart}>
+                Clear Cart
+              </button>
+            </div>
           </div>
-        )}
-    </div>
-  );
-}
-
-// ─── FLOATING CART ────────────────────────────────────────────────────────────
-function FloatingCart() {
-  const { cartCount, total, setPage, page } = useContext(AppContext);
-  if (cartCount === 0 || page === "cart" || page === "checkout") return null;
-  return (
-    <div style={{ position: "fixed", bottom: 72, left: "50%", transform: "translateX(-50%)", width: "calc(100% - 32px)", maxWidth: 448, zIndex: 200 }}>
-      <button onClick={() => setPage("cart")} style={{ width: "100%", background: "linear-gradient(135deg,#0f172a,#1e3a5f)", color: "#fff", border: "none", borderRadius: 18, padding: "14px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", fontFamily: "inherit", boxShadow: "0 8px 32px rgba(0,0,0,0.4)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ background: "#ef4444", color: "#fff", borderRadius: "50%", width: 22, height: 22, fontSize: 11, fontWeight: 900, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>{cartCount}</span>
-          <span style={{ fontWeight: 700, fontSize: 14 }}>{cartCount} item{cartCount !== 1 ? "s" : ""} in cart</span>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontWeight: 800, fontSize: 15 }}>₹{total}</span>
-          <span style={{ background: "#0ea5e9", borderRadius: 8, padding: "2px 10px", fontSize: 12, fontWeight: 700 }}>View →</span>
-        </div>
-      </button>
+      )}
+
+      {lastOrder ? (
+        <>
+          <hr style={styles.hr} />
+          <h2>Last Order</h2>
+          <div style={styles.orderSuccess}>
+            <div><strong>Order ID:</strong> {lastOrder.id}</div>
+            <div><strong>Status:</strong> {lastOrder.status}</div>
+            <div><strong>Total:</strong> ₹{Number(lastOrder.total || 0).toFixed(2)}</div>
+            <div><strong>Address:</strong> {lastOrder.address}</div>
+            <div><strong>Payment:</strong> {lastOrder.paymentMethod}</div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
-// ─── BOTTOM NAV ───────────────────────────────────────────────────────────────
-function BottomNav() {
-  const { page, setPage, cartCount } = useContext(AppContext);
-  const tabs = [{ id: "home", icon: "🏠", label: "Home" }, { id: "cart", icon: "🛒", label: "Cart", badge: cartCount }, { id: "orders", icon: "📦", label: "Orders" }];
-  return (
-    <div style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: "#fff", borderTop: "1px solid #f0f0f0", display: "flex", zIndex: 150, boxShadow: "0 -4px 20px rgba(0,0,0,0.06)" }}>
-      {tabs.map(tab => (
-        <button key={tab.id} onClick={() => setPage(tab.id)} style={{ flex: 1, background: "none", border: "none", padding: "10px 0 12px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, fontFamily: "inherit", position: "relative" }}>
-          <span style={{ fontSize: 22, position: "relative" }}>
-            {tab.icon}
-            {tab.badge > 0 && <span style={{ position: "absolute", top: -4, right: -8, background: "#ef4444", color: "#fff", borderRadius: "50%", width: 16, height: 16, fontSize: 9, fontWeight: 900, display: "flex", alignItems: "center", justifyContent: "center" }}>{tab.badge}</span>}
-          </span>
-          <span style={{ fontSize: 10, fontWeight: page === tab.id ? 800 : 500, color: page === tab.id ? "#0ea5e9" : "#94a3b8" }}>{tab.label}</span>
-          {page === tab.id && <div style={{ position: "absolute", top: 0, left: "50%", transform: "translateX(-50%)", width: 28, height: 3, background: "#0ea5e9", borderRadius: "0 0 4px 4px" }} />}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-// ─── APP ROOT ─────────────────────────────────────────────────────────────────
-export default function App() {
-  return (
-    <AppProvider>
-      <style>{`
-        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-        body { margin: 0; font-family: 'Nunito', sans-serif; background: #f8fafc; }
-        ::-webkit-scrollbar { display: none; }
-        @keyframes slideDown { from { opacity:0; transform:translateY(-16px) scale(0.95); } to { opacity:1; transform:translateY(0) scale(1); } }
-        @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.5; } }
-        input, button, textarea { -webkit-appearance: none; }
-      `}</style>
-      <div style={{ maxWidth: 480, margin: "0 auto", minHeight: "100vh", background: "#f8fafc", position: "relative" }}>
-        <InnerApp />
-      </div>
-    </AppProvider>
-  );
-}
-
-function InnerApp() {
-  const { page } = useContext(AppContext);
-  return (
-    <>
-      {page === "home" && <HomePage />}
-      {page === "cart" && <CartPage />}
-      {page === "checkout" && <CheckoutPage />}
-      {page === "orders" && <OrdersPage />}
-      <FloatingCart />
-      <BottomNav />
-    </>
-  );
-}
+const styles = {
+  page: {
+    padding: 20,
+    minHeight: "100vh",
+    background: "#ffffff",
+    color: "#0f172a",
+    fontFamily: "Inter, sans-serif",
+  },
+  heading: {
+    marginBottom: 16,
+  },
+  statusBox: {
+    marginBottom: 14,
+    padding: "10px 12px",
+    background: "#eff6ff",
+    border: "1px solid #bfdbfe",
+    color: "#1d4ed8",
+    borderRadius: 8,
+  },
+  bannerWrap: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+    gap: 12,
+    marginBottom: 20,
+  },
+  banner: {
+    color: "white",
+    borderRadius: 16,
+    padding: 16,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    minHeight: 120,
+  },
+  bannerImage: {
+    width: 80,
+    height: 80,
+    objectFit: "cover",
+    borderRadius: 12,
+    background: "rgba(255,255,255,0.2)",
+  },
+  topSection: {
+    display: "flex",
+    gap: 10,
+    flexWrap: "wrap",
+    marginBottom: 18,
+  },
+  input: {
+    padding: "10px 12px",
+    borderRadius: 10,
+    border: "1px solid #cbd5e1",
+    background: "#fff",
+    color: "#0f172a",
+    minWidth: 180,
+  },
+  categoryRow: {
+    display: "flex",
+    gap: 10,
+    overflowX: "auto",
+    paddingBottom: 8,
+    marginBottom: 18,
+  },
+  categoryChip: {
+    padding: "10px 14px",
+    borderRadius: 999,
+    border: "1px solid #cbd5e1",
+    background: "#fff",
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+  },
+  categoryChipActive: {
+    background: "#2563eb",
+    color: "white",
+    borderColor: "#2563eb",
+  },
+  productGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+    gap: 14,
+  },
+  productCard: {
+    border: "1px solid #e2e8f0",
+    borderRadius: 16,
+    padding: 14,
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+    background: "#fff",
+  },
+  productImage: {
+    width: "100%",
+    height: 160,
+    objectFit: "cover",
+    borderRadius: 12,
+    background: "#f8fafc",
+  },
+  productImagePlaceholder: {
+    width: "100%",
+    height: 160,
+    borderRadius: 12,
+    background: "#f1f5f9",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    color: "#64748b",
+  },
+  badge: {
+    display: "inline-block",
+    marginTop: 6,
+    marginBottom: 8,
+    padding: "4px 8px",
+    borderRadius: 999,
+    background: "#ecfeff",
+    color: "#0f766e",
+    fontSize: 12,
+    fontWeight: 600,
+  },
+  priceRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 6,
+    marginBottom: 4,
+  },
+  originalPrice: {
+    textDecoration: "line-through",
+    color: "#64748b",
+    fontSize: 14,
+  },
+  description: {
+    fontSize: 14,
+    color: "#475569",
+    marginTop: 8,
+    marginBottom: 10,
+    lineHeight: 1.5,
+  },
+  button: {
+    padding: "10px 14px",
+    borderRadius: 10,
+    border: "none",
+    background: "#16a34a",
+    color: "white",
+    cursor: "pointer",
+  },
+  buttonSecondary: {
+    padding: "10px 14px",
+    borderRadius: 10,
+    border: "none",
+    background: "#e2e8f0",
+    color: "#0f172a",
+    cursor: "pointer",
+  },
+  buttonDanger: {
+    padding: "10px 14px",
+    borderRadius: 10,
+    border: "none",
+    background: "#dc2626",
+    color: "white",
+    cursor: "pointer",
+  },
+  offerList: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+    gap: 12,
+  },
+  offerCard: {
+    border: "1px solid #e2e8f0",
+    borderRadius: 14,
+    padding: 14,
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 10,
+    background: "#fff",
+  },
+  cartWrap: {
+    display: "grid",
+    gridTemplateColumns: "2fr 1fr",
+    gap: 16,
+  },
+  cartItem: {
+    border: "1px solid #e2e8f0",
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 12,
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 10,
+    alignItems: "center",
+    background: "#fff",
+  },
+  qtyControls: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  qtyBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    border: "1px solid #cbd5e1",
+    background: "#fff",
+    cursor: "pointer",
+  },
+  removeBtn: {
+    padding: "8px 10px",
+    borderRadius: 8,
+    border: "none",
+    background: "#fee2e2",
+    color: "#991b1b",
+    cursor: "pointer",
+  },
+  checkoutBox: {
+    border: "1px solid #e2e8f0",
+    borderRadius: 16,
+    padding: 16,
+    background: "#fff",
+    height: "fit-content",
+  },
+  inlineRow: {
+    display: "flex",
+    gap: 10,
+    flexWrap: "wrap",
+    marginBottom: 12,
+    alignItems: "center",
+  },
+  appliedOffer: {
+    marginBottom: 12,
+    padding: "8px 10px",
+    borderRadius: 8,
+    background: "#ecfccb",
+    color: "#3f6212",
+    fontSize: 14,
+  },
+  billRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    marginBottom: 8,
+    fontSize: 15,
+  },
+  billTotal: {
+    fontWeight: 700,
+    fontSize: 18,
+    marginTop: 12,
+    paddingTop: 10,
+    borderTop: "1px solid #e2e8f0",
+  },
+  orderSuccess: {
+    border: "1px solid #bbf7d0",
+    background: "#f0fdf4",
+    borderRadius: 14,
+   
