@@ -32,8 +32,8 @@ export default function App() {
 
   const setSafeStatus = (message) => {
     setStatusMessage(message);
-    window.clearTimeout(window.__sabGCustomerStatusTimer);
-    window.__sabGCustomerStatusTimer = window.setTimeout(() => {
+    window.clearTimeout(window.__quickmartCustomerStatusTimer);
+    window.__quickmartCustomerStatusTimer = window.setTimeout(() => {
       setStatusMessage("");
     }, 2500);
   };
