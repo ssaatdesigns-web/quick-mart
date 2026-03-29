@@ -362,7 +362,7 @@ export default function App() {
   if (loading) {
     return (
       <div style={styles.page}>
-        <h1 style={styles.heading}>sabG</h1>
+        <h1 style={styles.heading}>Quickmart</h1>
         <p>Loading products...</p>
       </div>
     );
@@ -370,7 +370,7 @@ export default function App() {
 
   return (
     <div style={styles.page}>
-      <h1 style={styles.heading}>sabG</h1>
+      <h1 style={styles.heading}>Quickmart</h1>
 
       {statusMessage ? <div style={styles.statusBox}>{statusMessage}</div> : null}
 
