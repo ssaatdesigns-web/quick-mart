@@ -32,8 +32,8 @@ export default function App() {
 
   const setSafeStatus = (message) => {
     setStatusMessage(message);
-    window.clearTimeout(window.__quickmartCustomerStatusTimer);
-    window.__quickmartCustomerStatusTimer = window.setTimeout(() => {
+    window.clearTimeout(window.__sabGCustomerStatusTimer);
+    window.__sabGCustomerStatusTimer = window.setTimeout(() => {
       setStatusMessage("");
     }, 2500);
   };
@@ -362,7 +362,7 @@ export default function App() {
   if (loading) {
     return (
       <div style={styles.page}>
-        <h1 style={styles.heading}>QuickMart</h1>
+        <h1 style={styles.heading}>sabG</h1>
         <p>Loading products...</p>
       </div>
     );
@@ -370,7 +370,7 @@ export default function App() {
 
   return (
     <div style={styles.page}>
-      <h1 style={styles.heading}>QuickMart</h1>
+      <h1 style={styles.heading}>sabG</h1>
 
       {statusMessage ? <div style={styles.statusBox}>{statusMessage}</div> : null}
 
